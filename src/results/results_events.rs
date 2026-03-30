@@ -70,6 +70,11 @@ pub fn handle_results_pane_key(app: &mut App, key: KeyEvent) {
             app.results_scroll.scroll_right(1);
         }
 
+        KeyCode::Char(' ') => {
+            let cursor_line = app.results_cursor.cursor_line();
+            app.toggle_collapse(cursor_line);
+        }
+
         KeyCode::Char('H') => {
             app.results_scroll.scroll_left(10);
         }

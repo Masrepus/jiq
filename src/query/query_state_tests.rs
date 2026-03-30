@@ -1070,3 +1070,73 @@ fn test_poll_response_with_no_receiver() {
     let result = state.poll_response();
     assert!(result.is_none());
 }
+
+// ============================================================================
+// Collapsing Tests
+// ============================================================================
+
+#[test]
+fn test_find_bracket_range_object() {
+    let json = r#"{
+  "a": {
+    "b": 1
+  },
+  "c": 2
+}"#;
+    let state = QueryState::new(json.to_string());
+    
+    // Line 1 is "  \"a\": {"
+    let range = state.find_bracket_range(1);
+    assert_eq!(range, Some((1, 3)));
+    
+    // Line 0 is "{"
+    let range = state.find_bracket_range(0);
+    assert_eq!(range, Some((0, 5)));
+}
+
+#[test]
+fn test_find_bracket_range_array() {
+    let json = r#"{
+  "arr": [
+    1,
+    2,
+    3
+  ]
+}"#;
+    let state = QueryState::new(json.to_string());
+    
+    // Line 1 is "  \"arr\": ["
+    let range = state.find_bracket_range(1);
+    assert_eq!(range, Some((1, 5)));
+}
+
+#[test]
+fn test_find_bracket_range_no_bracket() {
+    let json = r#"{
+  "a": 1
+}"#;
+    let state = QueryState::new(json.to_string());
+    
+    // Line 1 is "  \"a\": 1"
+    let range = state.find_bracket_range(1);
+    assert_eq!(range, None);
+}
+
+#[test]
+fn test_find_bracket_range_handles_strings() {
+    let json = r#"{
+  "a": "ignore { bracket",
+  "b": {
+    "c": 1
+  }
+}"#;
+    let state = QueryState::new(json.to_string());
+    
+    // Line 1 contains a bracket in a string, should be ignored
+    let range = state.find_bracket_range(1);
+    assert_eq!(range, None);
+    
+    // Line 2 starts a real object
+    let range = state.find_bracket_range(2);
+    assert_eq!(range, Some((2, 4)));
+}

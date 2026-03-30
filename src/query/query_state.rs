@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use tokio_util::sync::CancellationToken;
@@ -68,6 +69,8 @@ pub struct QueryState {
     pub(crate) cached_execution_time_ms: Option<u64>,
     /// Whether current result is null/empty (valid query but no results)
     pub is_empty_result: bool,
+    /// Collapsed line ranges: map of start_line -> end_line (inclusive)
+    pub collapsed_ranges: BTreeMap<u32, u32>,
 
     // Async execution support
     /// Channel to send query requests to worker
@@ -175,6 +178,7 @@ impl QueryState {
             cached_line_widths,
             cached_execution_time_ms: None,
             is_empty_result: false,
+            collapsed_ranges: BTreeMap::new(),
             request_tx: Some(request_tx),
             response_rx: Some(response_rx),
             next_request_id: 1, // Reserve 0 for worker errors
@@ -261,6 +265,7 @@ impl QueryState {
             self.cached_line_count = cached_line_count;
             self.cached_max_line_width = cached_max_line_width;
             self.cached_line_widths = Some(Arc::new(widths));
+            self.collapsed_ranges.clear();
         }
     }
 
@@ -409,6 +414,7 @@ impl QueryState {
                     self.cached_execution_time_ms = processed.execution_time_ms;
                     self.base_query_for_suggestions = Some(processed.query.clone());
                     self.base_type_for_suggestions = Some(processed.result_type);
+                    self.collapsed_ranges.clear();
                 } else {
                     // Null result - preserve ALL cache including rendered output
                     // Only update self.result so it shows as "null" in error state
@@ -515,6 +521,55 @@ impl QueryState {
     /// Always uses cached value computed when result changes
     pub fn max_line_width(&self) -> u16 {
         self.cached_max_line_width
+    }
+
+    /// Find the range of a bracket-enclosed structure starting on a given line.
+    ///
+    /// Returns Some((start_line, end_line)) if a matching bracket is found.
+    pub fn find_bracket_range(&self, line_idx: u32) -> Option<(u32, u32)> {
+        let unformatted = self.last_successful_result_unformatted.as_ref()?;
+        let lines: Vec<&str> = unformatted.lines().collect();
+        if line_idx as usize >= lines.len() {
+            return None;
+        }
+
+        let start_line = lines[line_idx as usize];
+
+        // Find the last open bracket on the start line (that's not in a string)
+        let mut last_bracket = None;
+        let mut state = crate::autocomplete::scan_state::ScanState::default();
+        for ch in start_line.chars() {
+            if !state.is_in_string() {
+                if ch == '{' || ch == '[' {
+                    last_bracket = Some(ch);
+                }
+            }
+            state = state.advance(ch);
+        }
+
+        let open_bracket = last_bracket?;
+        let close_bracket = if open_bracket == '{' { '}' } else { ']' };
+
+        let mut nesting = 1;
+        for i in (line_idx + 1) as usize..lines.len() {
+            let line = lines[i];
+            let mut state = crate::autocomplete::scan_state::ScanState::default();
+            for ch in line.chars() {
+                if !state.is_in_string() {
+                    if ch == open_bracket {
+                        nesting += 1;
+                    } else if ch == close_bracket {
+                        nesting -= 1;
+                        if nesting == 0 {
+                            return Some((line_idx, i as u32));
+                        }
+                    }
+                }
+                state = state.advance(ch);
+            }
+        }
+
+        None
     }
 }
 

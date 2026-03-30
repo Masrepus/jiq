@@ -7,7 +7,7 @@ pub mod jq_functions;
 pub mod json_navigator;
 pub mod path_parser;
 mod result_analyzer;
-mod scan_state;
+pub mod scan_state;
 mod variable_extractor;
 
 #[cfg(test)]

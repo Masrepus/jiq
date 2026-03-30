@@ -748,3 +748,62 @@ fn test_trigger_ai_request_empty_result_uses_unformatted() {
 #[cfg(test)]
 #[path = "app_state_tests/dirty_flag_tests.rs"]
 mod dirty_flag_tests;
+
+#[test]
+fn test_results_line_count_with_collapsed_ranges() {
+    let json = r#"{
+  "a": {
+    "b": 1
+  },
+  "c": 2
+}"#;
+    let mut app = test_app(json);
+    
+    // Initial line count should be 6
+    assert_eq!(app.results_line_count_u32(), 6);
+    
+    // Collapse range (1, 3) - lines 2 and 3 are hidden
+    if let Some(query) = &mut app.query {
+        query.collapsed_ranges.insert(1, 3);
+    }
+    
+    // Line count should now be 6 - (3 - 1) = 4
+    assert_eq!(app.results_line_count_u32(), 4);
+    
+    // Map visible indices to real indices
+    // Visible: 0 -> Real: 0
+    // Visible: 1 -> Real: 1 (collapsed start)
+    // Visible: 2 -> Real: 4 (after collapsed range)
+    // Visible: 3 -> Real: 5
+    assert_eq!(app.get_real_line_index(0), 0);
+    assert_eq!(app.get_real_line_index(1), 1);
+    assert_eq!(app.get_real_line_index(2), 4);
+    assert_eq!(app.get_real_line_index(3), 5);
+}
+
+#[test]
+fn test_toggle_collapse() {
+    let json = r#"{
+  "a": {
+    "b": 1
+  },
+  "c": 2
+}"#;
+    let mut app = test_app(json);
+    
+    // Toggle collapse on line 1 (visible index)
+    app.toggle_collapse(1);
+    
+    if let Some(query) = &app.query {
+        assert!(query.collapsed_ranges.contains_key(&1));
+        assert_eq!(query.collapsed_ranges.get(&1), Some(&3));
+    }
+    assert_eq!(app.results_line_count_u32(), 4);
+    
+    // Toggle again to expand
+    app.toggle_collapse(1);
+    if let Some(query) = &app.query {
+        assert!(query.collapsed_ranges.is_empty());
+    }
+    assert_eq!(app.results_line_count_u32(), 6);
+}

@@ -222,7 +222,56 @@ impl App {
     }
 
     pub fn results_line_count_u32(&self) -> u32 {
-        self.query.as_ref().map_or(0, |q| q.line_count())
+        let total = self.query.as_ref().map_or(0, |q| q.line_count());
+        if let Some(query) = &self.query {
+            let mut hidden = 0;
+            for (start, end) in &query.collapsed_ranges {
+                hidden += end - start;
+            }
+            total.saturating_sub(hidden)
+        } else {
+            total
+        }
+    }
+
+    /// Map a visible line index to its real line index in the query result.
+    pub fn get_real_line_index(&self, visible_index: u32) -> u32 {
+        let query = match &self.query {
+            Some(q) => q,
+            None => return visible_index,
+        };
+
+        let mut current_visible = 0;
+        let mut real_index = 0;
+
+        for (&start, &end) in &query.collapsed_ranges {
+            let visible_before = start.saturating_sub(real_index);
+            if current_visible + visible_before >= visible_index {
+                return real_index + (visible_index - current_visible);
+            }
+            current_visible += visible_before + 1;
+            real_index = end + 1;
+        }
+
+        real_index + (visible_index - current_visible)
+    }
+
+    pub fn toggle_collapse(&mut self, visible_line: u32) {
+        let real_line = self.get_real_line_index(visible_line);
+        let Some(query) = &mut self.query else {
+            return;
+        };
+
+        if query.collapsed_ranges.contains_key(&real_line) {
+            query.collapsed_ranges.remove(&real_line);
+            self.mark_dirty();
+        } else if let Some((start, end)) = query.find_bracket_range(real_line) {
+            // Only collapse if there's more than one line to collapse
+            if end > start {
+                query.collapsed_ranges.insert(start, end);
+                self.mark_dirty();
+            }
+        }
     }
 
     pub fn update_autocomplete(&mut self) {

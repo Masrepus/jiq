@@ -314,22 +314,52 @@ pub fn render_pane(app: &mut App, frame: &mut Frame, area: Rect) -> (Rect, Optio
             block = block.title_bottom(timing_title.alignment(Alignment::Left));
         }
 
-        // Use cached pre-rendered text
-        // Optimization: Only clone visible viewport to avoid massive allocations
-        let scroll_offset = app.results_scroll.offset as usize;
+        // Slice to viewport range (with bounds checking) using visible-to-real mapping
         let viewport_lines = viewport_height as usize;
+        let scroll_offset = app.results_scroll.offset;
+        let mut visible_lines_with_real_idx = Vec::new();
+        
+        if let Some(query) = &app.query {
+            let mut real_idx = app.get_real_line_index(scroll_offset as u32);
+            let total_real = rendered.lines.len() as u32;
 
-        // Slice to viewport range (with bounds checking)
-        let total_lines = rendered.lines.len();
-        let end_line = (scroll_offset + viewport_lines).min(total_lines);
-        let visible_lines = if scroll_offset < total_lines {
-            &rendered.lines[scroll_offset..end_line]
-        } else {
-            &[]
-        };
+            while visible_lines_with_real_idx.len() < viewport_lines && real_idx < total_real {
+                if let Some(&end) = query.collapsed_ranges.get(&real_idx) {
+                    let mut line = rendered.lines[real_idx as usize].clone();
+                    
+                    // Find what kind of bracket to show for the collapsed range
+                    let unformatted = query.last_successful_result_unformatted.as_ref();
+                    let end_line_unformatted = unformatted
+                        .and_then(|u| u.lines().nth(end as usize))
+                        .unwrap_or("");
+                    
+                    let trimmed_end = end_line_unformatted.trim();
+                    let close_bracket = if trimmed_end.ends_with(',') {
+                         if trimmed_end.starts_with('}') { " ... }," } else { " ... ]," }
+                    } else {
+                         if trimmed_end.starts_with('}') { " ... }" } else { " ... ]" }
+                    };
 
-        // Clone only visible lines (50 lines instead of 100K+ for large files!)
-        let viewport_text = Text::from(visible_lines.to_vec());
+                    line.spans.push(Span::styled(
+                        close_bracket,
+                        Style::default().fg(theme::results::RESULT_OK),
+                    ));
+                    
+                    visible_lines_with_real_idx.push((line, real_idx));
+                    real_idx = end + 1;
+                } else {
+                    visible_lines_with_real_idx.push((rendered.lines[real_idx as usize].clone(), real_idx));
+                    real_idx += 1;
+                }
+            }
+        }
+
+        let viewport_text = Text::from(
+            visible_lines_with_real_idx
+                .iter()
+                .map(|(line, _)| line.clone())
+                .collect::<Vec<_>>(),
+        );
 
         // Apply DIM effect for stale results
         let viewport_text = if is_stale {
@@ -343,8 +373,7 @@ pub fn render_pane(app: &mut App, frame: &mut Frame, area: Rect) -> (Rect, Optio
             apply_search_highlights(
                 viewport_text,
                 &app.search,
-                app.results_scroll.offset,
-                viewport_height,
+                &visible_lines_with_real_idx,
             )
         } else {
             viewport_text
@@ -352,7 +381,11 @@ pub fn render_pane(app: &mut App, frame: &mut Frame, area: Rect) -> (Rect, Optio
 
         let show_cursor = app.focus == crate::app::Focus::ResultsPane;
         let final_text = if show_cursor {
-            apply_cursor_highlights(final_text, &app.results_cursor, app.results_scroll.offset)
+            apply_cursor_highlights(
+                final_text,
+                &app.results_cursor,
+                app.results_scroll.offset as u32,
+            )
         } else {
             final_text
         };
@@ -539,8 +572,7 @@ fn apply_dim_to_text(text: Text<'_>) -> Text<'static> {
 fn apply_search_highlights(
     text: Text<'_>,
     search_state: &crate::search::SearchState,
-    scroll_offset: u16,
-    viewport_height: u16,
+    visible_lines: &[(Line<'static>, u32)],
 ) -> Text<'static> {
     let matches = search_state.matches();
     let current_match_index = search_state.current_index();
@@ -561,16 +593,14 @@ fn apply_search_highlights(
         );
     }
 
-    let _ = viewport_height;
     let highlighted_lines: Vec<Line<'static>> = text
         .lines
         .into_iter()
         .enumerate()
         .map(|(line_idx, line)| {
-            // Adjust line_idx by scroll_offset to get absolute line number
-            let absolute_line = line_idx + scroll_offset as usize;
+            let (_, absolute_real_line) = visible_lines[line_idx];
             let line_matches: Vec<(usize, &Match)> =
-                search_state.matches_on_line(absolute_line as u32).collect();
+                search_state.matches_on_line(absolute_real_line).collect();
 
             if line_matches.is_empty() {
                 Line::from(
@@ -653,7 +683,7 @@ fn apply_highlights_to_line(
 fn apply_cursor_highlights(
     text: Text<'_>,
     cursor_state: &crate::results::cursor_state::CursorState,
-    scroll_offset: u16,
+    scroll_offset: u32,
 ) -> Text<'static> {
     let cursor_line = cursor_state.cursor_line();
     let hovered_line = cursor_state.hovered_line();
@@ -665,14 +695,14 @@ fn apply_cursor_highlights(
             .into_iter()
             .enumerate()
             .map(|(line_idx, line)| {
-                let absolute_line = line_idx as u32 + scroll_offset as u32;
+                let absolute_visible_line = line_idx as u32 + scroll_offset;
 
                 let bg_color =
-                    if is_visual && absolute_line >= sel_start && absolute_line <= sel_end {
+                    if is_visual && absolute_visible_line >= sel_start && absolute_visible_line <= sel_end {
                         Some(theme::results::VISUAL_SELECTION_BG)
-                    } else if absolute_line == cursor_line {
+                    } else if absolute_visible_line == cursor_line {
                         Some(theme::results::CURSOR_LINE_BG)
-                    } else if Some(absolute_line) == hovered_line {
+                    } else if Some(absolute_visible_line) == hovered_line {
                         Some(theme::results::HOVERED_LINE_BG)
                     } else {
                         None
